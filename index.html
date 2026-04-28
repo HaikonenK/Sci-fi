@@ -1,33 +1,269 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="sv">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sci-Fi Project</title>
+    <title>Sci-Fi: Nyckelkortet</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.js"></script>
+    
     <style>
+        /* Grundläggande stil för att centrera spelet med en snygg neon-ram */
         body {
-            font-family: Arial, sans-serif;
+            background-color: #050505;
             margin: 0;
-            padding: 20px;
-            background-color: #1a1a1a;
-            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: sans-serif;
         }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        h1 {
-            color: #00bfff;
-        }
-        p {
-            line-height: 1.6;
+        #phaser-game {
+            border: 3px solid #00ffff;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
+            overflow: hidden;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Welcome to Sci-Fi Project</h1>
-        <p>This is the main page of the Sci-Fi project repository.</p>
-    </div>
+
+    <div id="phaser-game"></div>
+
+    <script>
+        const config = {
+            type: Phaser.AUTO,
+            width: 900,
+            height: 500,
+            parent: 'phaser-game',
+            backgroundColor: '#000000', 
+            physics: {
+                default: 'arcade',
+                arcade: { 
+                    gravity: { y: 1000 }, 
+                    debug: false 
+                }
+            },
+            scene: { 
+                preload: preload, 
+                create: create, 
+                update: update 
+            }
+        };
+
+        const game = new Phaser.Game(config);
+
+        // Globala variabler
+        let player;
+        let cursors, spaceKey;
+        let platforms, door, keycard;
+        let hasKeycard = false, gameOver = false;
+        let uiText, infoText;
+        let laserGroup;
+
+        function preload() {
+            // Spelarens bilder
+            this.load.image('hero', 'https://i.imgur.com/vgavBwh.png');         
+            this.load.image('hero_jump', 'https://i.imgur.com/OROLh6K.png');    
+            this.load.image('hero_walk1', 'https://i.imgur.com/f7uaDFY.png'); 
+            this.load.image('hero_walk2', 'https://i.imgur.com/3lAc8kp.png'); 
+
+            // Miljöbilder
+            this.load.image('bg', 'https://i.imgur.com/CWMlwy6.png');
+            this.load.image('cannon', 'https://i.imgur.com/VgylkOW.png');
+        }
+
+        function create() {
+            hasKeycard = false;
+            gameOver = false;
+
+            // Bakgrund
+            this.add.image(450, 250, 'bg').setDisplaySize(900, 500);
+
+            // Plattformar
+            platforms = this.physics.add.staticGroup();
+            addNeonPlatform(this, 450, 490, 900, 40); // Golv
+            addNeonPlatform(this, 300, 380, 160, 20); // Nivå 1
+            addNeonPlatform(this, 600, 270, 160, 20); // Nivå 2
+            addNeonPlatform(this, 300, 160, 160, 20); // Nivå 3
+
+            // Dörr och Nyckelkort
+            door = this.add.rectangle(850, 420, 50, 100, 0xff3333);
+            this.physics.add.existing(door, true);
+
+            keycard = this.add.rectangle(300, 130, 24, 16, 0xffea00);
+            this.physics.add.existing(keycard, true);
+            
+            // Svävande effekt på nyckelkortet
+            this.tweens.add({
+                targets: keycard, y: '-=8', yoyo: true, repeat: -1, duration: 1000, ease: 'Sine.easeInOut'
+            });
+
+            // --- Skapa Spelaren ---
+            player = this.physics.add.sprite(100, 420, 'hero');
+            player.setCollideWorldBounds(true);
+            player.setScale(0.27); 
+
+            // Skapa gång-animationen
+            this.anims.create({
+                key: 'walk',
+                frames: [ { key: 'hero_walk1' }, { key: 'hero_walk2' } ],
+                frameRate: 6, 
+                repeat: -1    
+            });
+
+            // --- Laserkanoner (Sprites) ---
+            
+            // Kanon på Nivå 2 (Höger vägg)
+            let cannonRight = this.add.image(880, 245, 'cannon');
+            cannonRight.setScale(0.15); 
+            cannonRight.setFlipX(true); 
+
+            // Kanon på Nivå 3 (Vänster vägg)
+            let cannonLeft = this.add.image(20, 135, 'cannon');
+            cannonLeft.setScale(0.15); 
+
+            // --- Skapa Laser-systemet ---
+            laserGroup = this.physics.add.group({ allowGravity: false });
+
+            // Timer: Skjut på Nivå 2 (Från höger kanon, rör sig vänster)
+            this.time.addEvent({
+                delay: 2000, 
+                callback: () => shootLaser(this, 850, 245, -250), 
+                loop: true
+            });
+
+            // Timer: Skjut på Nivå 3 (Från vänster kanon, rör sig höger)
+            this.time.addEvent({
+                delay: 2500, 
+                callback: () => shootLaser(this, 50, 135, 250),  
+                loop: true
+            });
+
+            // --- Kollisioner ---
+            this.physics.add.collider(player, platforms);
+            this.physics.add.overlap(player, keycard, collectKeycard, null, this);
+            this.physics.add.overlap(player, door, touchDoor, null, this);
+            this.physics.add.overlap(player, laserGroup, hitLaser, null, this);
+
+            // Kontroller
+            cursors = this.input.keyboard.createCursorKeys();
+            spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+
+            // UI-Texter
+            uiText = this.add.text(20, 20, "Dörren är låst. Leta upp nyckelkortet.", { fontSize: '20px', color: '#00ffff', fontFamily: 'monospace' });
+            infoText = this.add.text(20, 50, "← → rör dig, SPACE hoppa", { fontSize: '16px', color: '#888888', fontFamily: 'monospace' });
+        }
+
+        function update() {
+            if (gameOver) return;
+
+            let speed = 280;
+            const onGround = player.body.blocked.down;
+
+            // --- Styr rörelse ---
+            if (cursors.left.isDown) { 
+                player.setVelocityX(-speed); 
+                player.setFlipX(true); 
+            }
+            else if (cursors.right.isDown) { 
+                player.setVelocityX(speed); 
+                player.setFlipX(false); 
+            }
+            else {
+                player.setVelocityX(0);
+            }
+
+            // Hoppa
+            if (Phaser.Input.Keyboard.JustDown(spaceKey) && onGround) { 
+                player.setVelocityY(-550); 
+            }
+
+            // --- Bestäm vilket utseende/animation som ska visas ---
+            if (!onGround) {
+                player.anims.stop();
+                player.setTexture('hero_jump');
+            } else if (cursors.left.isDown || cursors.right.isDown) {
+                player.anims.play('walk', true);
+            } else {
+                player.anims.stop();
+                player.setTexture('hero');
+            }
+        }
+
+        // --- Spelmekanik & Fällor ---
+
+        function shootLaser(scene, x, y, velocityX) {
+            if (gameOver) return; 
+
+            const laser = scene.add.rectangle(x, y, 30, 6, 0xff0000);
+            laserGroup.add(laser);
+            
+            laser.body.setVelocityX(velocityX);
+
+            // Städa upp lasern när den åkt över skärmen
+            scene.time.delayedCall(4000, () => {
+                if (laser) laser.destroy();
+            });
+        }
+
+        function hitLaser(playerObj, laser) {
+            if (gameOver) return;
+            gameOver = true;
+            
+            laser.destroy(); 
+
+            playerObj.setVelocity(0, 0);
+            playerObj.anims.stop();
+            playerObj.setTint(0xff5555); 
+            
+            uiText.setText("Träffad av laser! Startar om...");
+            uiText.setColor('#ff3333');
+
+            playerObj.scene.time.delayedCall(1500, () => {
+                playerObj.scene.scene.restart();
+            });
+        }
+
+        function collectKeycard(playerObj, card) {
+            if (hasKeycard) return;
+            
+            hasKeycard = true;
+            card.destroy(); 
+            
+            door.setFillStyle(0x33ff33);
+            uiText.setText("Åtkomst beviljad! Gå till dörren.");
+            uiText.setColor('#33ff33');
+        }
+
+        function touchDoor(playerObj, doorHitbox) {
+            if (gameOver) return;
+
+            if (hasKeycard) {
+                gameOver = true;
+                player.setVelocity(0, 0);
+                player.anims.stop();
+                player.setTexture('hero'); 
+                uiText.setText("Nivå avklarad! Öppnar sluss...");
+                
+                doorHitbox.scene.time.delayedCall(2000, () => {
+                    doorHitbox.scene.scene.restart();
+                });
+            } else {
+                uiText.setText("Dörren är låst! Du måste ha nyckelkortet.");
+                uiText.setColor('#ff3333');
+            }
+        }
+
+        // --- Miljö ---
+
+        function addNeonPlatform(scene, x, y, width, height) {
+            const base = scene.add.rectangle(x, y, width, height, 0x1e293b);
+            scene.physics.add.existing(base, true);
+            platforms.add(base);
+            scene.add.rectangle(x, y - height/2 + 2, width, 4, 0x00ffff);
+        }
+    </script>
 </body>
 </html>
